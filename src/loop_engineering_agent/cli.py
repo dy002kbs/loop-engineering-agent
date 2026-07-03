@@ -17,6 +17,7 @@ from .core import (
     Trace,
     VerificationLoop,
 )
+from .langsmith import LangSmithTraceExporter, LangSmithTraceImporter, write_langsmith_payloads_jsonl
 from .persistence import JsonlTraceStore, SQLiteTraceStore
 
 
@@ -80,6 +81,54 @@ def analyze_traces(trace_store: TraceStore) -> dict:
     }
 
 
+def export_langsmith_payloads(
+    trace_store: TraceStore,
+    *,
+    project_name: str,
+    dry_run_jsonl: str | Path | None = None,
+    exporter: LangSmithTraceExporter | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Export local traces to LangSmith or write LangSmith payloads to JSONL."""
+
+    traces = list(trace_store.list(limit=limit))
+    if dry_run_jsonl:
+        payload_count = write_langsmith_payloads_jsonl(dry_run_jsonl, traces, project_name=project_name)
+        return {
+            "mode": "dry-run-jsonl",
+            "project_name": project_name,
+            "trace_count": len(traces),
+            "payload_count": payload_count,
+            "path": str(dry_run_jsonl),
+        }
+
+    exporter = exporter or LangSmithTraceExporter.from_environment(project_name=project_name)
+    results = exporter.export_traces(traces)
+    return {
+        "mode": "langsmith",
+        "project_name": project_name,
+        "trace_count": len(traces),
+        "payload_count": sum(item.run_count for item in results),
+        "root_run_ids": [item.root_run_id for item in results],
+    }
+
+
+def import_langsmith_traces(
+    trace_store: TraceStore,
+    *,
+    project_name: str,
+    importer: LangSmithTraceImporter | None = None,
+    limit: int = 100,
+) -> dict:
+    """Import LangSmith runs that contain loop_engineering_trace metadata."""
+
+    importer = importer or LangSmithTraceImporter.from_environment()
+    traces = list(importer.list_traces(project_name=project_name, limit=limit))
+    for trace in traces:
+        trace_store.append(trace)
+    return {"project_name": project_name, "imported_trace_count": len(traces)}
+
+
 def _trace_store_from_args(args: argparse.Namespace) -> TraceStore | None:
     if args.trace_jsonl and args.trace_sqlite:
         raise SystemExit("Choose only one of --trace-jsonl or --trace-sqlite.")
@@ -100,6 +149,26 @@ def _analysis_store_from_args(args: argparse.Namespace) -> TraceStore | None:
     return None
 
 
+def _langsmith_export_store_from_args(args: argparse.Namespace) -> TraceStore | None:
+    if args.export_langsmith_jsonl and args.export_langsmith_sqlite:
+        raise SystemExit("Choose only one of --export-langsmith-jsonl or --export-langsmith-sqlite.")
+    if args.export_langsmith_jsonl:
+        return JsonlTraceStore(Path(args.export_langsmith_jsonl))
+    if args.export_langsmith_sqlite:
+        return SQLiteTraceStore(Path(args.export_langsmith_sqlite))
+    return None
+
+
+def _langsmith_import_store_from_args(args: argparse.Namespace) -> TraceStore | None:
+    if args.import_langsmith_jsonl and args.import_langsmith_sqlite:
+        raise SystemExit("Choose only one of --import-langsmith-jsonl or --import-langsmith-sqlite.")
+    if args.import_langsmith_jsonl:
+        return JsonlTraceStore(Path(args.import_langsmith_jsonl))
+    if args.import_langsmith_sqlite:
+        return SQLiteTraceStore(Path(args.import_langsmith_sqlite))
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Loop Engineering Agent offline demo.")
     parser.add_argument("task", nargs="?", default="Turn loop engineering into an agent harness")
@@ -107,7 +176,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace-sqlite", help="Append the run trace to a SQLite database.")
     parser.add_argument("--analyze-jsonl", help="Analyze traces from a JSONL file instead of running the demo.")
     parser.add_argument("--analyze-sqlite", help="Analyze traces from a SQLite database instead of running the demo.")
+    parser.add_argument("--export-langsmith-jsonl", help="Read local JSONL traces and export them to LangSmith.")
+    parser.add_argument("--export-langsmith-sqlite", help="Read local SQLite traces and export them to LangSmith.")
+    parser.add_argument("--import-langsmith-jsonl", help="Import LangSmith traces into a local JSONL trace store.")
+    parser.add_argument("--import-langsmith-sqlite", help="Import LangSmith traces into a local SQLite trace store.")
+    parser.add_argument("--langsmith-project", default="loop-engineering-agent", help="LangSmith project name.")
+    parser.add_argument("--langsmith-limit", type=int, default=100, help="Maximum traces/runs to export or import.")
+    parser.add_argument(
+        "--langsmith-dry-run-jsonl",
+        help="Write LangSmith create_run payloads to JSONL instead of calling the LangSmith API.",
+    )
     args = parser.parse_args(argv)
+
+    langsmith_export_store = _langsmith_export_store_from_args(args)
+    if langsmith_export_store is not None:
+        print(
+            json.dumps(
+                export_langsmith_payloads(
+                    langsmith_export_store,
+                    project_name=args.langsmith_project,
+                    dry_run_jsonl=args.langsmith_dry_run_jsonl,
+                    limit=args.langsmith_limit,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    langsmith_import_store = _langsmith_import_store_from_args(args)
+    if langsmith_import_store is not None:
+        print(
+            json.dumps(
+                import_langsmith_traces(
+                    langsmith_import_store,
+                    project_name=args.langsmith_project,
+                    limit=args.langsmith_limit,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
 
     analysis_store = _analysis_store_from_args(args)
     if analysis_store is not None:

@@ -20,10 +20,22 @@ jobs:
         run: python -m pytest -q
       - name: Compile source, examples, and tests
         run: python -m compileall -q src examples tests
-      - name: CLI trace smoke
+      - name: CLI trace and LangSmith dry-run smoke
         run: |
           loop-agent --trace-jsonl .traces/ci-smoke.jsonl "CI smoke task"
           loop-agent --analyze-jsonl .traces/ci-smoke.jsonl
+          loop-agent --export-langsmith-jsonl .traces/ci-smoke.jsonl \
+            --langsmith-project loop-engineering-agent-ci \
+            --langsmith-dry-run-jsonl .traces/ci-langsmith-payloads.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payloads = [json.loads(line) for line in Path('.traces/ci-langsmith-payloads.jsonl').read_text().splitlines()]
+          assert payloads
+          assert payloads[0]['project_name'] == 'loop-engineering-agent-ci'
+          assert 'loop_engineering_trace' in payloads[0]['extra']
+          PY
       - name: Example smoke tests
         run: |
           python examples/docs_agent_demo.py

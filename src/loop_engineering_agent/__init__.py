@@ -27,6 +27,14 @@ from .core import (
     VerifiedRun,
 )
 from .graders import LLMJudgeGrader
+from .hosted_judges import AnthropicJudge, OpenAIJudge, judge_messages, parse_judge_response
+from .langsmith import (
+    LangSmithExportResult,
+    LangSmithTraceExporter,
+    LangSmithTraceImporter,
+    langsmith_run_payloads,
+    write_langsmith_payloads_jsonl,
+)
 from .persistence import JsonlTraceStore, SQLiteTraceStore, trace_from_dict, trace_to_dict
 from .server import CronJob, create_app, verified_run_to_dict
 
@@ -34,6 +42,7 @@ __all__ = [
     "AgentConfig",
     "AgentLoop",
     "AgentRun",
+    "AnthropicJudge",
     "CronJob",
     "DeterministicRubricGrader",
     "Event",
@@ -43,7 +52,11 @@ __all__ = [
     "HumanApprovalGate",
     "JsonlTraceStore",
     "LangChainAgentModel",
+    "LangSmithExportResult",
+    "LangSmithTraceExporter",
+    "LangSmithTraceImporter",
     "LLMJudgeGrader",
+    "OpenAIJudge",
     "ScriptedModel",
     "SQLiteTraceStore",
     "StepTrace",
@@ -54,7 +67,11 @@ __all__ = [
     "VerificationResult",
     "VerifiedRun",
     "create_app",
+    "judge_messages",
+    "langsmith_run_payloads",
+    "parse_judge_response",
     "trace_from_dict",
     "trace_to_dict",
     "verified_run_to_dict",
+    "write_langsmith_payloads_jsonl",
 ]
