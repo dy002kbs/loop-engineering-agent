@@ -18,5 +18,29 @@ jobs:
         run: python -m pip install -e .[dev]
       - name: Run tests
         run: python -m pytest -q
-      - name: CLI smoke
-        run: python -m loop_engineering_agent.cli "CI smoke task"
+      - name: Compile source, examples, and tests
+        run: python -m compileall -q src examples tests
+      - name: CLI trace smoke
+        run: |
+          loop-agent --trace-jsonl .traces/ci-smoke.jsonl "CI smoke task"
+          loop-agent --analyze-jsonl .traces/ci-smoke.jsonl
+      - name: Example smoke tests
+        run: |
+          python examples/docs_agent_demo.py
+          python examples/llm_judge_demo.py
+          python examples/langchain_adapter_demo.py
+      - name: FastAPI app smoke
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from examples.server_app import app
+
+          client = TestClient(app)
+          assert client.get('/health').status_code == 200
+          webhook = client.post('/webhooks/slack.message', json={'text': 'CI smoke'})
+          assert webhook.status_code == 200
+          assert webhook.json()['passed'] is True
+          cron = client.post('/cron/nightly-docs/run')
+          assert cron.status_code == 200
+          assert cron.json()['passed'] is True
+          PY

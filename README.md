@@ -9,10 +9,34 @@ LangChain 블로그 [The Art of Loop Engineering](https://www.langchain.com/blog
 | 블로그 개념 | 이 프로젝트의 구현 | 역할 |
 | --- | --- | --- |
 | Loop 1. Agent loop | `AgentLoop` | 모델이 도구를 호출하다가 최종 답을 낼 때까지 반복합니다. |
-| Loop 2. Verification loop | `VerificationLoop`, `DeterministicRubricGrader` | 결과를 루브릭으로 채점하고, 실패하면 피드백을 다음 시도에 넣어 재시도합니다. |
-| Loop 3. Event-driven loop | `EventDrivenLoop`, `Event` | Slack 메시지, 웹훅, 크론 같은 외부 이벤트를 에이전트 실행으로 변환합니다. |
-| Loop 4. Hill-climbing loop | `HillClimber` | 실행 trace와 grader 피드백을 분석해 prompt/rubric 개선안을 제안하고 적용합니다. |
+| Loop 2. Verification loop | `VerificationLoop`, `DeterministicRubricGrader`, `LLMJudgeGrader` | 결과를 루브릭/LLM judge로 채점하고, 실패하면 피드백을 다음 시도에 넣어 재시도합니다. |
+| Loop 3. Event-driven loop | `EventDrivenLoop`, `Event`, FastAPI `/webhooks/{kind}` | Slack 메시지, 웹훅, 크론 같은 외부 이벤트를 에이전트 실행으로 변환합니다. |
+| Loop 4. Hill-climbing loop | `HillClimber`, `JsonlTraceStore`, `SQLiteTraceStore` | 저장된 trace와 grader 피드백을 분석해 prompt/rubric 개선안을 제안하고 적용합니다. |
 | Human oversight | `HumanApprovalGate` | 민감한 도구 호출은 사람 승인 전까지 막습니다. |
+
+## 이번 확장 범위
+
+1. **Trace persistence**
+   - `JsonlTraceStore`
+   - `SQLiteTraceStore`
+   - `trace_to_dict()`, `trace_from_dict()`
+
+2. **LLM-as-a-judge grader**
+   - `LLMJudgeGrader`
+   - callable/object 기반 judge 주입
+   - JSON 문자열/딕셔너리 응답 파싱
+
+3. **LangChain `create_agent` adapter**
+   - `LangChainAgentModel`
+   - LangChain은 optional extra로 유지
+   - 테스트/데모는 fake runnable로 deterministic하게 검증
+
+4. **FastAPI webhook/cron server**
+   - `create_app()`
+   - `CronJob`
+   - `/webhooks/{event_kind}`
+   - `/cron/{job_name}/run`
+   - `/health`
 
 ## 왜 LangChain API를 직접 강제하지 않았나?
 
@@ -21,6 +45,7 @@ LangChain 블로그 [The Art of Loop Engineering](https://www.langchain.com/blog
 - 로컬/CI에서 deterministic test 가능
 - 외부 LLM 비용 없이 구조 학습 가능
 - 이후 `ScriptedModel` 대신 LangChain `create_agent`나 실제 LLM wrapper를 끼우기 쉬운 구조
+- FastAPI/LangChain/OpenAI 계열은 optional extra로 분리해서 기본 실행은 가볍게 유지
 
 ## 빠른 실행
 
@@ -37,6 +62,38 @@ python -m pip install -e .
 loop-agent "Turn loop engineering into an agent harness"
 ```
 
+## Trace 저장 + 분석
+
+JSONL trace 저장:
+
+```bash
+loop-agent --trace-jsonl .traces/runs.jsonl "문서 개선 요청을 처리해줘"
+loop-agent --analyze-jsonl .traces/runs.jsonl
+```
+
+SQLite trace 저장:
+
+```bash
+loop-agent --trace-sqlite .traces/runs.sqlite3 "문서 개선 요청을 처리해줘"
+loop-agent --analyze-sqlite .traces/runs.sqlite3
+```
+
+## Optional extras
+
+```bash
+# 테스트/개발: pytest + FastAPI test deps
+python -m pip install -e .[dev]
+
+# FastAPI server 실행용
+python -m pip install -e .[server]
+
+# 실제 LangChain create_agent adapter 사용용
+python -m pip install -e .[langchain]
+
+# 모든 optional integration
+python -m pip install -e .[all]
+```
+
 ## Python 사용 예시
 
 ```python
@@ -46,6 +103,7 @@ from loop_engineering_agent import (
     DeterministicRubricGrader,
     Event,
     EventDrivenLoop,
+    JsonlTraceStore,
     ScriptedModel,
     VerificationLoop,
 )
@@ -70,7 +128,25 @@ verified = VerificationLoop(
 app = EventDrivenLoop(verification_loop=verified)
 
 result = app.handle(Event(kind="slack.message", payload={"text": "Improve docs"}))
+JsonlTraceStore(".traces/runs.jsonl").append(result.trace)
 print(result.output)
+```
+
+## FastAPI server 예시
+
+```bash
+python -m pip install -e .[server]
+PYTHONPATH=src uvicorn examples.server_app:app --reload
+```
+
+다른 터미널에서:
+
+```bash
+curl -X POST http://127.0.0.1:8000/webhooks/slack.message \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Improve docs with loop engineering"}'
+
+curl -X POST http://127.0.0.1:8000/cron/nightly-docs/run
 ```
 
 ## 프로젝트 구조
@@ -78,14 +154,27 @@ print(result.output)
 ```text
 src/loop_engineering_agent/
   __init__.py
-  core.py      # loop stack implementation
-  cli.py       # offline demo CLI
+  adapters.py     # LangChain create_agent adapter
+  cli.py          # offline demo CLI + trace analysis
+  core.py         # loop stack implementation
+  graders.py      # LLM-as-a-judge grader
+  persistence.py  # JSONL/SQLite trace stores
+  server.py       # FastAPI webhook/cron app factory
 tests/
+  test_cli.py
+  test_langchain_adapter.py
+  test_llm_judge.py
   test_loop_stack.py
+  test_server.py
+  test_trace_persistence.py
 docs/
   article-notes-ko.md
+  extensions-ko.md
 examples/
   docs_agent_demo.py
+  langchain_adapter_demo.py
+  llm_judge_demo.py
+  server_app.py
 .github/workflows/
   ci.yml
 ```
@@ -97,14 +186,17 @@ examples/
 - Event-driven loop가 외부 이벤트 payload를 task로 변환해 실행하는지
 - Hill-climbing loop가 반복 실패 trace에서 prompt/rubric 개선안을 만드는지
 - Human approval gate가 민감 tool을 승인 전까지 차단하는지
+- JSONL/SQLite trace store가 trace를 저장/복원하고 hill-climbing 분석에 재사용되는지
+- LLM-as-a-judge grader가 structured response를 `VerificationResult`로 바꾸는지
+- LangChain adapter가 `create_agent` runnable 응답을 `AgentLoop` 응답 형태로 변환하는지
+- FastAPI webhook/cron endpoint가 event loop를 실행하고 trace를 저장하는지
 
 ## 다음 확장 아이디어
 
-1. `ScriptedModel`을 LangChain `create_agent` 기반 wrapper로 교체
-2. `DeterministicRubricGrader` 옆에 LLM-as-a-judge grader 추가
-3. FastAPI webhook endpoint로 GitHub/Slack/Telegram 이벤트 연결
-4. trace를 JSONL/SQLite/LangSmith로 저장
-5. `HillClimber`가 GitHub issue/PR까지 자동 생성하도록 확장
+1. 실제 OpenAI/Anthropic judge wrapper 추가
+2. LangSmith trace export/import 추가
+3. GitHub issue/PR 자동 생성은 `HumanApprovalGate`를 붙인 뒤 마지막 단계로 추가
+4. webhook signature 검증, auth token, rate limit 등 운영 보안 추가
 
 ## 출처
 
